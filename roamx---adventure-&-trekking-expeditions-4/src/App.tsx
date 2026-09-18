@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { initialAnnouncements } from './data/mockAnnouncements';
-import { initialTrips } from './data/mockTrips';
 import { AnnouncementStrip, BookingInquiry, DepartureCity, Trip } from './types';
 import { TopAnnouncementStrip } from './components/TopAnnouncementStrip';
 import { Navbar } from './components/Navbar';
@@ -25,24 +23,12 @@ import { Logo } from './components/Logo';
 import { Mountain, Phone, Mail, MapPin, Heart, ShieldCheck, Compass, Sparkles, Lock, Key, LogOut, MessageSquare, Globe } from 'lucide-react';
 
 export default function App() {
-  const [trips, setTrips] = useState<Trip[]>(initialTrips);
-  // Dynamically initialize Hero trip without hardcoding any specific trip ID
-  const [activeTripId, setActiveTripId] = useState<string>(() => {
-    const initialFeatured = initialTrips.find(
-      (t: any) => t.is_featured === true || t.isFeatured === true
-    );
-    return (
-      initialFeatured?.id ||
-      initialTrips.find((t) => t.isLive)?.id ||
-      initialTrips.find((t) => t.status === 'published')?.id ||
-      initialTrips[0]?.id ||
-      ''
-    );
-  });
-  const [announcements, setAnnouncements] = useState<AnnouncementStrip[]>(initialAnnouncements);
-  const [activeAnnouncement, setActiveAnnouncement] = useState<AnnouncementStrip | null>(
-    initialAnnouncements.find((a) => a.isActive) || null
-  );
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [activeTripId, setActiveTripId] = useState<string>('');
+  const [announcements, setAnnouncements] = useState<AnnouncementStrip[]>([]);
+  const [activeAnnouncement, setActiveAnnouncement] = useState<AnnouncementStrip | null>(null);
+  const [isTripsLoading, setIsTripsLoading] = useState(true);
+  const [tripsError, setTripsError] = useState<string | null>(null);
 
   // Derive Hero trip dynamically: check for is_featured === true, or fallback to live/first trip
   const featuredTrip = trips.find(
@@ -57,10 +43,10 @@ export default function App() {
   const activeTrip =
     trips.find((t) => t.id === activeTripId) || defaultHeroTrip;
   const [selectedCity, setSelectedCity] = useState<DepartureCity>(
-    activeTrip.departureCities[0] || { city: 'Dehradun', price: 7499 }
+    activeTrip?.departureCities[0] || { city: '', price: 0 }
   );
   const [selectedBatchDate, setSelectedBatchDate] = useState<string>(
-    activeTrip.batches[0]?.dates[0] || ''
+    activeTrip?.batches[0]?.dates[0] || ''
   );
 
   // Inquiries State
@@ -162,7 +148,7 @@ export default function App() {
         }
         if (tripsRes && tripsRes.ok) {
           const json = await tripsRes.json();
-          if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+          if (json.success && Array.isArray(json.data)) {
             setTrips(json.data);
             // Prioritize Supabase is_featured trip for Hero section
             const featured = json.data.find(
@@ -177,7 +163,11 @@ export default function App() {
             if (fallbackHero) {
               setActiveTripId(fallbackHero.id);
             }
+          } else {
+            setTripsError(json.error || 'Unable to load trips.');
           }
+        } else {
+          setTripsError('Unable to load trips from the API.');
         }
         if (settingsRes && settingsRes.ok) {
           const sJson = await settingsRes.json();
@@ -191,6 +181,9 @@ export default function App() {
         }
       } catch (err) {
         console.warn('API sync fallback to local store:', err);
+        setTripsError('Unable to load trips from the API.');
+      } finally {
+        setIsTripsLoading(false);
       }
     };
 
@@ -436,6 +429,18 @@ export default function App() {
       console.error('Failed to update status:', err);
     }
   };
+
+  if (isTripsLoading) {
+    return <div className="min-h-screen bg-[#F8F9FA]" aria-busy="true" />;
+  }
+
+  if (tripsError || !activeTrip) {
+    return (
+      <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center p-6 text-center text-[#1E293B]">
+        <p className="text-sm font-medium">{tripsError || 'No trips available.'}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] font-sans text-[#1E293B] antialiased selection:bg-[#FF6B35] selection:text-white overflow-x-hidden w-full max-w-full">

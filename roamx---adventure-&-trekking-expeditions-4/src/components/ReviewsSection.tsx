@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Trip, Review } from '../types';
-import { mockReviews } from '../data/mockReviews';
 
 // Deterministic First-Letter Fallback Avatar Component
 export const TrekkerAvatar: React.FC<{
@@ -79,18 +78,9 @@ interface ReviewsSectionProps {
 }
 
 export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips = [] }) => {
-  const [reviewsList, setReviewsList] = useState<Review[]>(() => {
-    try {
-      const cached = localStorage.getItem('roamx_community_reviews');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      // ignore
-    }
-    return mockReviews;
-  });
+  const [reviewsList, setReviewsList] = useState<Review[]>([]);
+  const [isReviewsLoading, setIsReviewsLoading] = useState(true);
+  const [reviewsError, setReviewsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'reviews' | 'photos'>('reviews');
   const [starFilter, setStarFilter] = useState<number | 'all'>('all');
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
@@ -111,22 +101,20 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [activePhotoModal, setActivePhotoModal] = useState<{ url: string; title?: string; author: string } | null>(null);
 
-  // Fetch reviews from server on load and sync to local state + localStorage
+  // Fetch reviews from the API; local browser content is never a source of truth.
   useEffect(() => {
     const loadReviews = () => {
       fetch('/api/reviews')
         .then((res) => res.json())
         .then((data) => {
-          if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+          if (data.success && Array.isArray(data.data)) {
             setReviewsList(data.data);
-            try {
-              localStorage.setItem('roamx_community_reviews', JSON.stringify(data.data));
-            } catch (e) {
-              // ignore
-            }
+          } else {
+            setReviewsError(data.error || 'Unable to load reviews.');
           }
         })
-        .catch(() => {});
+        .catch(() => setReviewsError('Unable to load reviews from the API.'))
+        .finally(() => setIsReviewsLoading(false));
     };
 
     loadReviews();
@@ -165,7 +153,7 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
   const currentTotalReviews = reviewsList.length;
   const currentAvgRating = currentTotalReviews > 0
     ? (reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / currentTotalReviews).toFixed(1)
-    : '4.9';
+    : '0.0';
 
   // Collect all photos from all reviews
   const allReviewPhotos = reviewsList.flatMap((r) =>
@@ -231,7 +219,7 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
     setUploadedPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Submit Review to Backend + localStorage
+  // Submit reviews through the API only.
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim() || !newComment.trim()) return;
@@ -259,28 +247,13 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
       });
 
       const resData = await response.json();
-      const createdReview: Review = resData.success && resData.data ? resData.data : {
-        id: `rev-${Date.now()}`,
-        name: reviewPayload.name,
-        city: reviewPayload.city,
-        rating: reviewPayload.rating,
-        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-        title: reviewPayload.title,
-        comment: reviewPayload.comment,
-        images: reviewPayload.images,
-        tripId: reviewPayload.tripId,
-        tripName: reviewPayload.tripName,
-        isVerified: true,
-        avatar: newAvatar || undefined,
-      };
+      if (!resData.success || !resData.data) {
+        throw new Error(resData.error || 'Failed to publish review.');
+      }
+      const createdReview: Review = resData.data;
 
       setReviewsList((prev) => {
         const updated = [createdReview, ...prev.filter((r) => r.id !== createdReview.id)];
-        try {
-          localStorage.setItem('roamx_community_reviews', JSON.stringify(updated));
-        } catch (e) {
-          // ignore
-        }
         return updated;
       });
 
@@ -305,33 +278,8 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
 
       setTimeout(() => setShowSuccessToast(false), 5000);
     } catch (err) {
-      console.error('Failed to submit review, saving locally:', err);
-      // Fallback local persistence
-      const localReview: Review = {
-        id: `rev-local-${Date.now()}`,
-        name: reviewPayload.name,
-        city: reviewPayload.city,
-        rating: reviewPayload.rating,
-        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-        title: reviewPayload.title,
-        comment: reviewPayload.comment,
-        images: reviewPayload.images,
-        tripId: reviewPayload.tripId,
-        tripName: reviewPayload.tripName,
-        isVerified: true,
-        avatar: newAvatar || undefined,
-      };
-
-      setReviewsList((prev) => {
-        const updated = [localReview, ...prev];
-        try {
-          localStorage.setItem('roamx_community_reviews', JSON.stringify(updated));
-        } catch (e) {}
-        return updated;
-      });
-
-      setShowSuccessToast(true);
-      setIsWriteModalOpen(false);
+      console.error('Failed to submit review:', err);
+      alert(err instanceof Error ? err.message : 'Failed to publish review. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -391,26 +339,28 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
                 </div>
               </div>
               <p className="text-xs text-gray-600 mt-2">
-                98.4% of travelers recommend RoamX for winter expeditions and high-altitude treks.
+                {currentTotalReviews > 0
+                  ? 'Based on published RoamX community reviews.'
+                  : 'Published community ratings will appear here.'}
               </p>
             </div>
 
             <div className="md:col-span-5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
               <div className="p-3 bg-[#F8F9FA] rounded-xl border border-gray-200">
                 <div className="text-xs text-gray-500 font-medium">Safety</div>
-                <div className="text-base font-bold text-[#004E64]">4.9 / 5.0</div>
+                <div className="text-base font-bold text-[#004E64]">{currentAvgRating} / 5.0</div>
               </div>
               <div className="p-3 bg-[#F8F9FA] rounded-xl border border-gray-200">
                 <div className="text-xs text-gray-500 font-medium">Leads</div>
-                <div className="text-base font-bold text-[#004E64]">5.0 / 5.0</div>
+                <div className="text-base font-bold text-[#004E64]">{currentAvgRating} / 5.0</div>
               </div>
               <div className="p-3 bg-[#F8F9FA] rounded-xl border border-gray-200">
                 <div className="text-xs text-gray-500 font-medium">Food</div>
-                <div className="text-base font-bold text-[#004E64]">4.8 / 5.0</div>
+                <div className="text-base font-bold text-[#004E64]">{currentAvgRating} / 5.0</div>
               </div>
               <div className="p-3 bg-[#F8F9FA] rounded-xl border border-gray-200">
                 <div className="text-xs text-gray-500 font-medium">Vibe</div>
-                <div className="text-base font-bold text-[#004E64]">4.9 / 5.0</div>
+                <div className="text-base font-bold text-[#004E64]">{currentAvgRating} / 5.0</div>
               </div>
             </div>
 
@@ -501,9 +451,19 @@ export const ReviewsSection: React.FC<ReviewsSectionProps> = ({ trip, allTrips =
         {/* TAB CONTENT 1: Reviews Grid */}
         {activeTab === 'reviews' && (
           <div className="mb-14">
-            {filteredReviews.length === 0 ? (
+            {isReviewsLoading ? (
               <div className="bg-white rounded-2xl p-8 text-center border border-gray-200">
-                <p className="text-sm text-gray-500">No reviews found matching the selected star filter.</p>
+                <p className="text-sm text-gray-500">Loading reviews...</p>
+              </div>
+            ) : reviewsError ? (
+              <div className="bg-white rounded-2xl p-8 text-center border border-gray-200">
+                <p className="text-sm text-gray-500">{reviewsError}</p>
+              </div>
+            ) : filteredReviews.length === 0 ? (
+              <div className="bg-white rounded-2xl p-8 text-center border border-gray-200">
+                <p className="text-sm text-gray-500">
+                  {starFilter === 'all' ? 'No reviews available yet.' : 'No reviews found matching the selected star filter.'}
+                </p>
                 <button
                   onClick={() => setStarFilter('all')}
                   className="mt-3 text-xs font-bold text-[#004E64] hover:underline"

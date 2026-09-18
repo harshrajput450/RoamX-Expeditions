@@ -119,20 +119,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (data.success) {
         setAdminReviews((prev) => prev.filter((r) => r.id !== reviewToDelete.id));
         
-        // Update persistent localStorage cache for community reviews
-        try {
-          const cached = localStorage.getItem('roamx_community_reviews');
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed)) {
-              const updated = parsed.filter((r: any) => r.id !== reviewToDelete.id);
-              localStorage.setItem('roamx_community_reviews', JSON.stringify(updated));
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
-
         // Dispatch real-time custom event across applet tabs and components
         window.dispatchEvent(new CustomEvent('roamx_review_deleted', { detail: { reviewId: reviewToDelete.id } }));
         window.dispatchEvent(new Event('storage'));

@@ -1,126 +1,8 @@
-import fs from 'fs';
-import path from 'path';
 import { Trip, Review, BookingInquiry, AnnouncementStrip, DepartureCity } from '../src/types';
-import { initialTrips } from '../src/data/mockTrips';
-import { mockReviews } from '../src/data/mockReviews';
-import { initialAnnouncements } from '../src/data/mockAnnouncements';
 import { getSupabase, uploadImageToStorage, deleteImageFromStorage, isBase64DataUrl } from './supabase';
+let memoryAnnouncements: AnnouncementStrip[] = [];
+const memoryInquiries: BookingInquiry[] = [];
 
-// Persistent Local File DB setup to guarantee survival across restarts & sessions
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'roamx-db.json');
-
-function ensureDataDirExists() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-  } catch (e) {
-    console.warn('⚠️ Could not create data directory:', e);
-  }
-}
-
-interface LocalStoreSchema {
-  liveTripId: string;
-  trips: Trip[];
-  reviews: Review[];
-  announcements: AnnouncementStrip[];
-  inquiries: BookingInquiry[];
-}
-
-function loadInitialStore(): LocalStoreSchema {
-  ensureDataDirExists();
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.trips) && parsed.trips.length > 0) {
-        return {
-          liveTripId: parsed.liveTripId || parsed.trips.find((t: Trip) => t.isLive)?.id || 'kedarkantha-trek',
-          trips: parsed.trips,
-          reviews: Array.isArray(parsed.reviews) ? parsed.reviews : mockReviews,
-          announcements: Array.isArray(parsed.announcements) ? parsed.announcements : initialAnnouncements,
-          inquiries: Array.isArray(parsed.inquiries) ? parsed.inquiries : [],
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Error loading local DB file, falling back to seed data:', err);
-  }
-
-  // Default seed store
-  const defaultLiveId = 'kedarkantha-trek';
-  const seededTrips = initialTrips.map((t) => ({
-    ...t,
-    isLive: t.id === defaultLiveId,
-  }));
-
-  const initialStore: LocalStoreSchema = {
-    liveTripId: defaultLiveId,
-    trips: seededTrips,
-    reviews: JSON.parse(JSON.stringify(mockReviews)),
-    announcements: JSON.parse(JSON.stringify(initialAnnouncements)),
-    inquiries: [
-      {
-        id: 'inq-seed-1',
-        tripBookingId: 'RX-KED-84920',
-        tripId: 'kedarkantha-trek',
-        tripTitle: 'Kedarkantha Winter Snow Trek',
-        name: 'Rohan Verma',
-        phone: '+91 98765 43210',
-        email: 'rohan.v@example.com',
-        gender: 'Male',
-        dateOfBirth: '2001-05-12',
-        age: 25,
-        travelersCount: 1,
-        departureCity: 'Delhi',
-        selectedMonth: 'December 2026',
-        selectedDate: 'Dec 18 - Dec 22',
-        calculatedPrice: 8499,
-        paidAmount: 500,
-        paymentStatus: 'Verified',
-        utrNumber: 'UTR482910592810',
-        paymentMethod: 'UPI QR Verified',
-        message: 'Looking forward to summit push!',
-        status: 'Confirmed',
-        createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-      },
-    ],
-  };
-
-  saveStoreToFile(initialStore);
-  return initialStore;
-}
-
-function saveStoreToFile(store: LocalStoreSchema) {
-  ensureDataDirExists();
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('⚠️ Failed to save store to file:', err);
-  }
-}
-
-const loaded = loadInitialStore();
-let currentLiveTripId: string = loaded.liveTripId;
-let memoryTrips: Trip[] = loaded.trips;
-let memoryReviews: Review[] = loaded.reviews;
-let memoryAnnouncements: AnnouncementStrip[] = loaded.announcements;
-let memoryInquiries: BookingInquiry[] = loaded.inquiries;
-
-function persistMemory() {
-  saveStoreToFile({
-    liveTripId: currentLiveTripId,
-    trips: memoryTrips,
-    reviews: memoryReviews,
-    announcements: memoryAnnouncements,
-    inquiries: memoryInquiries,
-  });
-}
-
-let isTripsSeeded = false;
-let isReviewsSeeded = false;
-let isAnnouncementsSeeded = false;
 
 // ==========================================
 // TRIPS MAPPER
@@ -354,7 +236,7 @@ function mapAnnouncementToRow(ann: AnnouncementStrip): any {
 export async function getHomepageSettings(): Promise<{ liveTripId: string; liveTrip: Trip | null }> {
   const all = await getTrips();
   const featuredTrip = all.find((t) => t.is_featured === true || t.isFeatured === true);
-  const liveTrip = featuredTrip || all.find((t) => t.id === currentLiveTripId || t.isLive) || all[0] || null;
+  const liveTrip = featuredTrip || all.find((t) => t.isLive) || all[0] || null;
   return {
     liveTripId: liveTrip ? liveTrip.id : '',
     liveTrip,
@@ -369,70 +251,30 @@ export async function getLiveTrip(): Promise<Trip | null> {
 export async function getTrips(): Promise<Trip[]> {
   const supabase = getSupabase();
   if (!supabase) {
-    // Ensure single live trip
-    memoryTrips.forEach((t) => {
-      t.isLive = t.id === currentLiveTripId;
-    });
-    return memoryTrips;
+    throw new Error('Supabase is not configured; trips are unavailable.');
   }
 
   try {
     const { data, error } = await supabase.from('trips').select('*').order('created_at', { ascending: true });
 
     if (error) {
-      console.error('❌ Supabase getTrips error:', error.message);
-      memoryTrips.forEach((t) => {
-        t.isLive = t.id === currentLiveTripId;
-      });
-      return memoryTrips;
+      throw new Error(`Supabase getTrips failed: ${error.message}`);
     }
 
-    if (!data || data.length === 0) {
-      if (!isTripsSeeded) {
-        console.log('🌱 Seeding initial trips into Supabase...');
-        isTripsSeeded = true;
-        const seedRows = initialTrips.map(mapTripToRow);
-        const { error: seedError } = await supabase.from('trips').upsert(seedRows, { onConflict: 'id' });
-        if (seedError) console.error('❌ Failed to seed trips:', seedError.message);
-      }
-      return memoryTrips;
-    }
+    if (!data) throw new Error('Supabase returned no trips data.');
 
     const fetchedTrips = data.map(mapRowToTrip);
 
-    // Sync currentLiveTripId: check if any row has is_live in Supabase
-    const dbLiveTrip = fetchedTrips.find((t) => t.isLive);
-    if (dbLiveTrip && dbLiveTrip.id !== currentLiveTripId) {
-      currentLiveTripId = dbLiveTrip.id;
-    }
-
-    // Ensure strictly one live trip matches currentLiveTripId
-    fetchedTrips.forEach((t) => {
-      t.isLive = t.id === currentLiveTripId;
-    });
-
-    // Update memory cache
-    memoryTrips = fetchedTrips;
-    persistMemory();
-
     return fetchedTrips;
   } catch (err) {
-    console.error('❌ Exception in getTrips:', err);
-    memoryTrips.forEach((t) => {
-      t.isLive = t.id === currentLiveTripId;
-    });
-    return memoryTrips;
+    throw err;
   }
 }
 
 export async function getTripById(id: string): Promise<Trip | null> {
   const supabase = getSupabase();
   if (!supabase) {
-    const trip = memoryTrips.find((t) => t.id === id || t.slug === id) || null;
-    if (trip) {
-      trip.isLive = trip.id === currentLiveTripId;
-    }
-    return trip;
+    throw new Error('Supabase is not configured; trips are unavailable.');
   }
 
   try {
@@ -443,22 +285,12 @@ export async function getTripById(id: string): Promise<Trip | null> {
       data = slugData;
     }
     if (!data) {
-      const trip = memoryTrips.find((t) => t.id === id || t.slug === id) || null;
-      if (trip) {
-        trip.isLive = trip.id === currentLiveTripId;
-      }
-      return trip;
+      return null;
     }
     const mapped = mapRowToTrip(data);
-    mapped.isLive = mapped.id === currentLiveTripId;
     return mapped;
   } catch (err) {
-    console.error('❌ Exception in getTripById:', err);
-    const trip = memoryTrips.find((t) => t.id === id || t.slug === id) || null;
-    if (trip) {
-      trip.isLive = trip.id === currentLiveTripId;
-    }
-    return trip;
+    throw err;
   }
 }
 
@@ -500,18 +332,9 @@ export async function updateTrip(id: string, updates: Partial<Trip>): Promise<Tr
     ...updates,
     heroImage: updates.heroImage || (updates.gallery && updates.gallery[0]) || existing.heroImage,
     featuredImage: updates.heroImage || updates.featuredImage || (updates.gallery && updates.gallery[0]) || existing.featuredImage,
-    isLive: id === currentLiveTripId,
+    isLive: existing.isLive,
     updatedAt: new Date().toISOString(),
   };
-
-  // Update memory store
-  const idx = memoryTrips.findIndex((t) => t.id === id);
-  if (idx !== -1) {
-    memoryTrips[idx] = mergedTrip;
-  } else {
-    memoryTrips.push(mergedTrip);
-  }
-  persistMemory();
 
   const supabase = getSupabase();
   if (supabase) {
@@ -528,7 +351,6 @@ export async function updateTrip(id: string, updates: Partial<Trip>): Promise<Tr
         console.error('❌ Supabase updateTrip error:', error.message);
       } else if (data) {
         const updated = mapRowToTrip(data);
-        updated.isLive = updated.id === currentLiveTripId;
         return updated;
       }
     } catch (err) {
@@ -566,38 +388,9 @@ export async function updateTripStatus(id: string, status: Trip['status']): Prom
 }
 
 export async function deleteTrip(id: string): Promise<boolean> {
-  // Update memory
-  const idx = memoryTrips.findIndex((t) => t.id === id);
-  if (idx !== -1) {
-    memoryTrips.splice(idx, 1);
-  }
-
-  // Handle live trip deletion fallback
-  if (currentLiveTripId === id) {
-    const nextLive = memoryTrips.find((t) => t.status === 'published') || memoryTrips[0] || null;
-    currentLiveTripId = nextLive ? nextLive.id : '';
-    if (nextLive) {
-      nextLive.isLive = true;
-    }
-  }
-
-  persistMemory();
-
   const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const { error } = await supabase.from('trips').delete().eq('id', id);
-      if (error) {
-        console.error('❌ Supabase deleteTrip error:', error.message);
-      }
-      if (currentLiveTripId) {
-        await supabase.from('trips').update({ is_live: true }).eq('id', currentLiveTripId);
-      }
-    } catch (e: any) {
-      console.error('❌ Exception in deleteTrip:', e.message);
-      return false;
-    }
-  }
+  const { error } = await supabase.from('trips').delete().eq('id', id);
+  if (error) throw new Error(`Supabase deleteTrip failed: ${error.message}`);
   return true;
 }
 
@@ -779,23 +572,9 @@ export async function createTrip(tripData: Partial<Trip>): Promise<Trip> {
   };
 
   const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const row = mapTripToRow(newTrip);
-      await supabase.from('trips').upsert([row], { onConflict: 'id' });
-    } catch (e: any) {
-      console.error('❌ Failed to insert trip to Supabase:', e.message);
-    }
-  }
-
-  // Update memory store
-  const existingIdx = memoryTrips.findIndex((t) => t.id === newTrip.id);
-  if (existingIdx >= 0) {
-    memoryTrips[existingIdx] = newTrip;
-  } else {
-    memoryTrips.push(newTrip);
-  }
-  persistMemory();
+  if (!supabase) throw new Error('Supabase is not configured; trips cannot be created.');
+  const { error } = await supabase.from('trips').upsert([mapTripToRow(newTrip)], { onConflict: 'id' });
+  if (error) throw new Error(`Supabase createTrip failed: ${error.message}`);
 
   if (newTrip.isLive) {
     await setLiveTrip(newTrip.id);
@@ -805,25 +584,12 @@ export async function createTrip(tripData: Partial<Trip>): Promise<Trip> {
 }
 
 export async function setLiveTrip(tripId: string): Promise<{ success: boolean; trips: Trip[]; liveTrip: Trip | null; liveTripId: string }> {
-  currentLiveTripId = tripId;
-
-  // Update memory
-  memoryTrips.forEach((t) => {
-    t.isLive = t.id === tripId;
-  });
-  persistMemory();
-
   const supabase = getSupabase();
-  if (supabase) {
-    try {
-      // Set is_live = false on all other trips
-      await supabase.from('trips').update({ is_live: false }).neq('id', tripId);
-      // Set is_live = true on target trip
-      await supabase.from('trips').update({ is_live: true }).eq('id', tripId);
-    } catch (err: any) {
-      console.error('❌ Supabase setLiveTrip error:', err.message);
-    }
-  }
+  if (!supabase) throw new Error('Supabase is not configured; live trip cannot be changed.');
+  const { error: clearError } = await supabase.from('trips').update({ is_live: false }).neq('id', tripId);
+  if (clearError) throw new Error(`Supabase setLiveTrip failed: ${clearError.message}`);
+  const { error: setError } = await supabase.from('trips').update({ is_live: true }).eq('id', tripId);
+  if (setError) throw new Error(`Supabase setLiveTrip failed: ${setError.message}`);
 
   const all = await getTrips();
   const liveTrip = all.find((t) => t.id === tripId) || null;
@@ -872,8 +638,7 @@ export async function deleteTripGalleryImage(tripId: string, imageIndex: number)
 export async function getReviews(tripId?: string): Promise<Review[]> {
   const supabase = getSupabase();
   if (!supabase) {
-    if (tripId) return memoryReviews.filter((r) => r.tripId === tripId);
-    return memoryReviews;
+    throw new Error('Supabase is not configured; reviews are unavailable.');
   }
 
   try {
@@ -885,26 +650,14 @@ export async function getReviews(tripId?: string): Promise<Review[]> {
     const { data, error } = await query;
 
     if (error) {
-      console.error('❌ Supabase getReviews error:', error.message);
-      return memoryReviews;
+      throw new Error(`Supabase getReviews failed: ${error.message}`);
     }
 
-    if (!data || data.length === 0) {
-      if (!isReviewsSeeded) {
-        console.log('🌱 Seeding initial reviews into Supabase...');
-        isReviewsSeeded = true;
-        const seedRows = mockReviews.map(mapReviewToRow);
-        const { error: seedError } = await supabase.from('reviews').upsert(seedRows, { onConflict: 'id' });
-        if (seedError) console.error('❌ Failed to seed reviews:', seedError.message);
-        return mockReviews;
-      }
-      return [];
-    }
+    if (!data) throw new Error('Supabase returned no reviews data.');
 
     return data.map(mapRowToReview);
   } catch (err) {
-    console.error('❌ Exception in getReviews:', err);
-    return memoryReviews;
+    throw err;
   }
 }
 
@@ -943,8 +696,7 @@ export async function createReview(reviewInput: Partial<Review>): Promise<Review
 
   const supabase = getSupabase();
   if (!supabase) {
-    memoryReviews.unshift(review);
-    return review;
+    throw new Error('Supabase is not configured; reviews cannot be created.');
   }
 
   try {
@@ -952,25 +704,19 @@ export async function createReview(reviewInput: Partial<Review>): Promise<Review
     const { data, error } = await supabase.from('reviews').insert([row]).select().single();
 
     if (error) {
-      console.error('❌ Supabase createReview error:', error.message);
-      memoryReviews.unshift(review);
-      return review;
+      throw new Error(`Supabase createReview failed: ${error.message}`);
     }
 
     return mapRowToReview(data);
   } catch (err) {
-    console.error('❌ Exception in createReview:', err);
-    memoryReviews.unshift(review);
-    return review;
+    throw err;
   }
 }
 
 export async function deleteReview(id: string): Promise<boolean> {
   const supabase = getSupabase();
   if (!supabase) {
-    const initLen = memoryReviews.length;
-    memoryReviews = memoryReviews.filter((r) => r.id !== id);
-    return memoryReviews.length < initLen;
+    throw new Error('Supabase is not configured; reviews cannot be deleted.');
   }
 
   try {
@@ -997,10 +743,7 @@ export async function deleteReview(id: string): Promise<boolean> {
 export async function deleteReviewImage(reviewId: string, imageIndex: number): Promise<Review | null> {
   const supabase = getSupabase();
   if (!supabase) {
-    const rev = memoryReviews.find((r) => r.id === reviewId);
-    if (!rev || !rev.images || rev.images[imageIndex] === undefined) return null;
-    rev.images.splice(imageIndex, 1);
-    return rev;
+    throw new Error('Supabase is not configured; review images cannot be deleted.');
   }
 
   try {
@@ -1092,9 +835,7 @@ export async function createInquiry(inquiryData: Partial<BookingInquiry>): Promi
 
   const supabase = getSupabase();
   if (!supabase) {
-    memoryInquiries.unshift(inquiry);
-    persistMemory();
-    return inquiry;
+    throw new Error('Supabase is not configured; inquiries cannot be created.');
   }
 
   try {
@@ -1102,18 +843,12 @@ export async function createInquiry(inquiryData: Partial<BookingInquiry>): Promi
     const { data, error } = await supabase.from('inquiries').insert([row]).select().single();
 
     if (error) {
-      console.error('❌ Supabase createInquiry error:', error.message);
-      memoryInquiries.unshift(inquiry);
-      persistMemory();
-      return inquiry;
+      throw new Error(`Supabase createInquiry failed: ${error.message}`);
     }
 
     return mapRowToInquiry(data);
   } catch (err) {
-    console.error('❌ Exception in createInquiry:', err);
-    memoryInquiries.unshift(inquiry);
-    persistMemory();
-    return inquiry;
+    throw err;
   }
 }
 
@@ -1244,26 +979,14 @@ export async function getAnnouncements(): Promise<AnnouncementStrip[]> {
     const { data, error } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
 
     if (error) {
-      console.error('❌ Supabase getAnnouncements error:', error.message);
-      return memoryAnnouncements;
+      throw new Error(`Supabase getAnnouncements failed: ${error.message}`);
     }
 
-    if (!data || data.length === 0) {
-      if (!isAnnouncementsSeeded) {
-        console.log('🌱 Seeding initial announcements into Supabase...');
-        isAnnouncementsSeeded = true;
-        const seedRows = initialAnnouncements.map(mapAnnouncementToRow);
-        const { error: seedError } = await supabase.from('announcements').upsert(seedRows, { onConflict: 'id' });
-        if (seedError) console.error('❌ Failed to seed announcements:', seedError.message);
-        return initialAnnouncements;
-      }
-      return [];
-    }
+    if (!data) throw new Error('Supabase returned no announcements data.');
 
     return data.map(mapRowToAnnouncement);
   } catch (err) {
-    console.error('❌ Exception in getAnnouncements:', err);
-    return memoryAnnouncements;
+    throw err;
   }
 }
 
