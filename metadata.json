@@ -1,0 +1,6 @@
+{
+  "name": "RoamX - Adventure & Trekking Expeditions",
+  "description": "RoamX travel & trekking expedition platform featuring live announcement strips, dynamic departure city pricing, interactive day-by-day itineraries, booking inquiry forms, and full admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
